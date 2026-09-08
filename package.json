@@ -1,0 +1,15 @@
+{
+  "name": "bitrix24-project-finance",
+  "version": "1.0.0",
+  "description": "Совместный учёт доходов и расходов по проектам для встраивания в Битрикс24",
+  "type": "module",
+  "engines": {"node": ">=22"},
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node --test",
+    "demo": "node src/seed-demo.js"
+  },
+  "keywords": ["bitrix24", "finance", "projects", "sqlite"],
+  "license": "MIT"
+}

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Project Finance · Bitrix24</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">PF</div>
+        <div><strong>Project Finance</strong><span>для Битрикс24</span></div>
+      </div>
+      <nav>
+        <button class="nav-item active" data-view="dashboard"><span>⌂</span> Обзор</button>
+        <button class="nav-item" data-view="projects"><span>▦</span> Проекты</button>
+        <button class="nav-item" data-view="categories"><span>≡</span> Статьи</button>
+        <button class="nav-item" data-view="employees"><span>♙</span> Сотрудники</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="integration-state">
+          <span class="dot"></span>
+          <div><b id="integrationTitle">Локальный режим</b><small id="integrationSubtitle">готово к встраиванию</small></div>
+        </div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="pageTitle">Экономика проектов</h1>
+          <p id="pageSubtitle">Доходы, расходы и эффективность в одном месте</p>
+        </div>
+        <div class="top-actions">
+          <button class="btn secondary" id="addOperationBtn">+ Операция</button>
+          <button class="btn primary" id="addProjectBtn">+ Новый проект</button>
+        </div>
+      </header>
+      <section id="content" class="content"></section>
+    </main>
+  </div>
+
+  <dialog id="projectDialog" class="dialog">
+    <form method="dialog" id="projectForm">
+      <div class="dialog-head"><div><small>Новый проект</small><h2>Добавить проект</h2></div><button class="icon-btn" type="button" data-close-dialog>×</button></div>
+      <label>Название проекта<input name="name" required placeholder="Например: CRM для отдела продаж"></label>
+      <label>Клиент<input name="client" placeholder="Название клиента"></label>
+      <label>Описание<textarea name="description" rows="3" placeholder="Коротко о проекте"></textarea></label>
+      <div class="dialog-actions"><button class="btn ghost" type="button" data-close-dialog>Отмена</button><button class="btn primary" value="default">Создать проект</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="operationDialog" class="dialog">
+    <form method="dialog" id="operationForm">
+      <div class="dialog-head"><div><small>Финансовая операция</small><h2>Добавить доход или расход</h2></div><button class="icon-btn" type="button" data-close-dialog>×</button></div>
+      <div class="segmented"><button type="button" data-tx-type="income" class="active">Доход</button><button type="button" data-tx-type="expense">Расход</button></div>
+      <input type="hidden" name="type" value="income">
+      <label>Проект<select name="project_id" required></select></label>
+      <label>Статья<div class="inline-field"><select name="category_id" required></select><button type="button" class="mini-btn" id="quickCategoryBtn">+</button></div></label>
+      <div class="form-grid"><label>Сумма, ₽<input name="amount" type="number" min="0.01" step="0.01" required placeholder="0"></label><label>Дата<input name="transaction_date" type="date" required></label></div>
+      <label>Комментарий<input name="comment" placeholder="Необязательно"></label>
+      <div class="dialog-actions"><button class="btn ghost" type="button" data-close-dialog>Отмена</button><button class="btn primary" value="default">Сохранить</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="categoryDialog" class="dialog small-dialog">
+    <form method="dialog" id="categoryForm">
+      <div class="dialog-head"><div><small>Справочник</small><h2>Новая статья</h2></div><button class="icon-btn" type="button" data-close-dialog>×</button></div>
+      <label>Тип<select name="type"><option value="income">Доход</option><option value="expense">Расход</option></select></label>
+      <label>Название<input name="name" required placeholder="Например: Лицензии ПО"></label>
+      <div class="dialog-actions"><button class="btn ghost" type="button" data-close-dialog>Отмена</button><button class="btn primary" value="default">Добавить</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="employeeDialog" class="dialog small-dialog">
+    <form method="dialog" id="employeeForm">
+      <div class="dialog-head"><div><small>Команда</small><h2>Новый сотрудник</h2></div><button class="icon-btn" type="button" data-close-dialog>×</button></div>
+      <label>Имя<input name="name" required placeholder="Имя и фамилия"></label>
+      <label>Email<input name="email" type="email" placeholder="name@company.ru"></label>
+      <div class="dialog-actions"><button class="btn ghost" type="button" data-close-dialog>Отмена</button><button class="btn primary" value="default">Добавить</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="memberDialog" class="dialog small-dialog">
+    <form method="dialog" id="memberForm">
+      <div class="dialog-head"><div><small>Команда проекта</small><h2>Добавить сотрудника</h2></div><button class="icon-btn" type="button" data-close-dialog>×</button></div>
+      <input type="hidden" name="project_id">
+      <label>Сотрудник<select name="employee_id" required></select></label>
+      <label>Роль<input name="role" placeholder="Например: Разработчик"></label>
+      <div class="dialog-actions"><button class="btn ghost" type="button" data-close-dialog>Отмена</button><button class="btn primary" value="default">Добавить</button></div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
