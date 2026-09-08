@@ -7,6 +7,7 @@ import path from 'node:path';
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'project-finance-'));
 process.env.DB_PATH = path.join(tmp, 'test.sqlite');
 const { createServer } = await import('../src/server.js');
+const { db } = await import('../src/db.js');
 
 let server;
 let base;
@@ -19,7 +20,8 @@ test.before(async () => {
 
 test.after(async () => {
   await new Promise(resolve => server.close(resolve));
-  fs.rmSync(tmp, { recursive: true, force: true });
+  db.close();
+  fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 test('project + income + expense produces correct dashboard metrics', async () => {
