@@ -37,7 +37,7 @@
 Требуется **Node.js 22+**. Внешние npm-зависимости не используются.
 
 ```bash
-git clone <URL_РЕПОЗИТОРИЯ>
+git clone https://github.com/evgen007776-cell/bitrix24-project-finance.git
 cd bitrix24-project-finance
 npm start
 ```
