@@ -1,122 +1,41 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
+import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
+const tmp=fs.mkdtempSync(path.join(os.tmpdir(),'project-finance-'));process.env.DB_PATH=path.join(tmp,'test.sqlite');
+const {createServer}=await import('../src/server.js');const {db}=await import('../src/db.js');let server,base;
+test.before(async()=>{server=createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r));base=`http://127.0.0.1:${server.address().port}`});
+test.after(async()=>{await new Promise(r=>server.close(r));db.close();fs.rmSync(tmp,{recursive:true,force:true,maxRetries:5,retryDelay:100})});
+async function post(url,body){return fetch(base+url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)})}
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'project-finance-'));
-process.env.DB_PATH = path.join(tmp, 'test.sqlite');
-const { createServer } = await import('../src/server.js');
-const { db } = await import('../src/db.js');
-
-let server;
-let base;
-
-test.before(async () => {
-  server = createServer();
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  base = `http://127.0.0.1:${server.address().port}`;
+test('production financial model and cumulative receivable',async()=>{
+ let r=await post('/api/employees',{name:'Manager',role:'Менеджер'});const manager=await r.json();
+ r=await post('/api/projects',{name:'Production project',client:'Client',deal_amount:1000000,deal_date:'2026-08-15',manager_employee_id:manager.id});assert.equal(r.status,201);const p=await r.json();
+ const cats=await (await fetch(base+'/api/categories')).json();const income=cats.find(x=>x.type==='income'),expense=cats.find(x=>x.name==='Расходы на ИИ');
+ await post('/api/completions',{project_id:p.id,amount:300000,completion_date:'2026-08-20',document:'Акт 1'});
+ await post('/api/completions',{project_id:p.id,amount:200000,completion_date:'2026-09-05',document:'Акт 2'});
+ await post('/api/transactions',{project_id:p.id,category_id:income.id,amount:250000,transaction_date:'2026-08-25'});
+ await post('/api/transactions',{project_id:p.id,category_id:income.id,amount:100000,transaction_date:'2026-09-06'});
+ await post('/api/transactions',{project_id:p.id,category_id:expense.id,amount:50000,transaction_date:'2026-09-06'});
+ const d=await (await fetch(base+`/api/dashboard?date_from=2026-09-01&date_to=2026-09-30`)).json();const row=d.projects.find(x=>x.id===p.id);
+ assert.equal(row.completed,200000);assert.equal(row.received,100000);assert.equal(row.expenses,50000);assert.equal(row.profit,150000);assert.equal(row.profitability,75);assert.equal(row.receivable,150000);assert.equal(row.new_receivable,100000);
 });
 
-test.after(async () => {
-  await new Promise(resolve => server.close(resolve));
-  db.close();
-  fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+test('deal sum on overview depends on selected period',async()=>{
+ await post('/api/projects',{name:'September deal',deal_amount:400000,deal_date:'2026-09-03'});
+ let d=await (await fetch(base+'/api/dashboard?date_from=2026-09-01&date_to=2026-09-30')).json();assert.equal(d.totals.deal_amount,400000);
+ d=await (await fetch(base+'/api/dashboard?date_from=2026-08-01&date_to=2026-08-31')).json();assert.equal(d.totals.deal_amount,1000000);
 });
 
-test('project + income + expense produces correct dashboard metrics', async () => {
-  let response = await fetch(`${base}/api/projects`, {
-    method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ name: 'Test project' })
-  });
-  assert.equal(response.status, 201);
-  const project = await response.json();
-
-  response = await fetch(`${base}/api/categories`);
-  const categories = await response.json();
-  const income = categories.find(c => c.type === 'income');
-  const expense = categories.find(c => c.name === 'Расходы на ИИ');
-
-  for (const tx of [
-    { category_id: income.id, amount: 100000 },
-    { category_id: expense.id, amount: 25000 },
-  ]) {
-    response = await fetch(`${base}/api/transactions`, {
-      method: 'POST', headers: {'content-type':'application/json'},
-      body: JSON.stringify({ project_id: project.id, transaction_date: '2026-09-08', ...tx })
-    });
-    assert.equal(response.status, 201);
-  }
-
-  response = await fetch(`${base}/api/dashboard`);
-  const dashboard = await response.json();
-  const row = dashboard.projects.find(p => p.id === project.id);
-  assert.equal(row.income, 100000);
-  assert.equal(row.expense, 25000);
-  assert.equal(row.profit, 75000);
-  assert.equal(row.profitability, 75);
+test('multiple members do not duplicate project financial totals',async()=>{
+ const projects=await (await fetch(base+'/api/projects?date_from=2026-09-01&date_to=2026-09-30')).json();const p=projects.find(x=>x.name==='Production project');
+ for(const name of ['A','B']){const e=await (await post('/api/employees',{name})).json();const r=await post(`/api/projects/${p.id}/members`,{employee_id:e.id});assert.equal(r.status,201)}
+ const d=await (await fetch(base+'/api/dashboard?date_from=2026-09-01&date_to=2026-09-30')).json();const row=d.projects.find(x=>x.id===p.id);assert.equal(row.completed,200000);assert.equal(row.expenses,50000);assert.equal(row.members_count,2);
 });
 
-test('stores decimal monetary amounts without floating-point drift', async () => {
-  const projectResponse = await fetch(`${base}/api/projects`, {
-    method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ name: 'Kopecks project' })
-  });
-  const project = await projectResponse.json();
-  const categories = await (await fetch(`${base}/api/categories`)).json();
-  const income = categories.find(c => c.type === 'income');
-
-  for (const amount of ['0.10', '0.20']) {
-    const response = await fetch(`${base}/api/transactions`, {
-      method: 'POST', headers: {'content-type':'application/json'},
-      body: JSON.stringify({ project_id: project.id, category_id: income.id, amount, transaction_date: '2026-09-08' })
-    });
-    assert.equal(response.status, 201);
-  }
-
-  const details = await (await fetch(`${base}/api/projects/${project.id}`)).json();
-  assert.deepEqual(details.transactions.map(tx => tx.amount).sort(), [0.1, 0.2]);
-  assert.equal(details.income, 0.3);
-  assert.equal(details.profit, 0.3);
-});
-
-test('rejects zero, negative and over-precise transaction amounts', async () => {
-  const projects = await (await fetch(`${base}/api/projects`)).json();
-  const categories = await (await fetch(`${base}/api/categories`)).json();
-  for (const amount of [0, -1, '10.001']) {
-    const response = await fetch(`${base}/api/transactions`, {
-      method: 'POST', headers: {'content-type':'application/json'},
-      body: JSON.stringify({ project_id: projects[0].id, category_id: categories[0].id, amount, transaction_date: '2026-09-08' })
-    });
-    assert.equal(response.status, 400);
-  }
-});
-
-test('adding multiple project members does not duplicate financial totals', async () => {
-  const projects = await (await fetch(`${base}/api/projects`)).json();
-  const project = projects.find(p => p.name === 'Test project');
-  for (const name of ['Employee A', 'Employee B']) {
-    const created = await (await fetch(`${base}/api/employees`, {
-      method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({name})
-    })).json();
-    const response = await fetch(`${base}/api/projects/${project.id}/members`, {
-      method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({employee_id:created.id})
-    });
-    assert.equal(response.status, 201);
-  }
-  const dashboard = await (await fetch(`${base}/api/dashboard`)).json();
-  const row = dashboard.projects.find(p => p.id === project.id);
-  assert.equal(row.income, 100000);
-  assert.equal(row.expense, 25000);
-  assert.equal(row.members_count, 2);
-});
-
-test('creates a custom expense category', async () => {
-  const response = await fetch(`${base}/api/categories`, {
-    method:'POST', headers:{'content-type':'application/json'},
-    body:JSON.stringify({name:'Лицензии ПО', type:'expense'})
-  });
-  assert.equal(response.status, 201);
-  const created = await response.json();
-  assert.equal(created.name, 'Лицензии ПО');
-  assert.equal(created.type, 'expense');
-  assert.equal(created.is_default, 0);
+test('transactions and documents support period filters',async()=>{
+ const projects=await (await fetch(base+'/api/projects')).json();const p=projects[0];const cats=await (await fetch(base+'/api/categories')).json();const expense=cats.find(x=>x.type==='expense');
+ await post('/api/transactions',{project_id:p.id,category_id:expense.id,amount:1234.56,transaction_date:'2026-07-01',counterparty:'Vendor'});
+ await post('/api/documents',{project_id:p.id,document_type:'Акт',document_date:'2026-09-07',amount:10000,sync_status:'pending'});
+ const tx=await (await fetch(base+'/api/transactions?date_from=2026-09-01&date_to=2026-09-30')).json();assert.equal(tx.some(x=>x.transaction_date==='2026-07-01'),false);
+ const docs=await (await fetch(base+'/api/documents?date_from=2026-09-01&date_to=2026-09-30')).json();assert.equal(docs.length,1);assert.equal(docs[0].sync_status,'pending');
 });

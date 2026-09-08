@@ -3,325 +3,89 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db, initDb } from './db.js';
-import { calculateMetricsFromCents, centsToMoney, moneyToCents } from './finance.js';
+import { calculateProjectMetricsFromCents, centsToMoney, moneyToCents, roundPercent } from './finance.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(__dirname, '../public');
 const port = Number(process.env.PORT || 3000);
-
 initDb();
 
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.js': 'application/javascript; charset=utf-8',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.ico': 'image/x-icon',
-};
+const MIME={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'application/javascript; charset=utf-8','.svg':'image/svg+xml','.png':'image/png','.ico':'image/x-icon'};
+const DATE_RE=/^\d{4}-\d{2}-\d{2}$/;
+function json(res,status,payload){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(payload))}
+function badRequest(res,message){json(res,400,{error:message})}
+function notFound(res){json(res,404,{error:'Не найдено'})}
+async function readJson(req){const chunks=[];let size=0;for await(const chunk of req){size+=chunk.length;if(size>1_000_000)throw new Error('PAYLOAD_TOO_LARGE');chunks.push(chunk)}if(!chunks.length)return{};try{return JSON.parse(Buffer.concat(chunks).toString('utf8'))}catch{throw new Error('INVALID_JSON')}}
+function parseId(value){const id=Number(value);return Number.isInteger(id)&&id>0?id:null}
+function normalizeType(value){return value==='income'||value==='expense'?value:null}
+function normalizeDate(value){return DATE_RE.test(String(value||''))?String(value):null}
+function projectExists(id){return Boolean(db.prepare('SELECT 1 FROM projects WHERE id=?').get(id))}
+function employeeExists(id){return Boolean(db.prepare('SELECT 1 FROM employees WHERE id=?').get(id))}
+function periodFromUrl(url){const rawFrom=url.searchParams.get('date_from'),rawTo=url.searchParams.get('date_to');const from=rawFrom?normalizeDate(rawFrom):'0000-01-01',to=rawTo?normalizeDate(rawTo):'9999-12-31';if((rawFrom&&!from)||(rawTo&&!to)||from>to)return null;return{from,to}}
+function manager(id){if(!id)return null;return db.prepare('SELECT id,name,email,role,bitrix_user_id FROM employees WHERE id=?').get(id)||null}
 
-function json(res, status, payload) {
-  res.writeHead(status, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Cache-Control': 'no-store',
-  });
-  res.end(JSON.stringify(payload));
-}
-
-function badRequest(res, message) {
-  json(res, 400, { error: message });
-}
-
-function notFound(res) {
-  json(res, 404, { error: 'Не найдено' });
-}
-
-async function readJson(req) {
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > 1_000_000) throw new Error('PAYLOAD_TOO_LARGE');
-    chunks.push(chunk);
-  }
-  if (!chunks.length) return {};
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString('utf8'));
-  } catch {
-    throw new Error('INVALID_JSON');
-  }
-}
-
-function parseId(value) {
-  const id = Number(value);
-  return Number.isInteger(id) && id > 0 ? id : null;
-}
-
-function normalizeType(value) {
-  return value === 'income' || value === 'expense' ? value : null;
-}
-
-function projectExists(id) {
-  return Boolean(db.prepare('SELECT 1 FROM projects WHERE id = ?').get(id));
-}
-
-function getProjectMetrics(projectId = null) {
-  const where = projectId ? 'WHERE p.id = ?' : '';
-  // Transactions and members are aggregated independently. Joining both detail tables
-  // directly would multiply transaction amounts by the number of project members.
-  const rows = db.prepare(`
-    SELECT p.id, p.name, p.client, p.description, p.status, p.created_at,
-      COALESCE(fin.income_cents, 0) AS income_cents,
-      COALESCE(fin.expense_cents, 0) AS expense_cents,
-      COALESCE(team.members_count, 0) AS members_count
+function getProjectMetrics(projectId=null,period={from:'0000-01-01',to:'9999-12-31'}){
+  const params=[period.from,period.to,period.from,period.to,period.from,period.to,period.to,period.to];
+  let where=''; if(projectId){where='WHERE p.id=?';params.push(projectId)}
+  const rows=db.prepare(`
+    SELECT p.*, m.name AS manager_name, m.email AS manager_email,
+      CASE WHEN p.deal_date BETWEEN ? AND ? THEN p.deal_amount_cents ELSE 0 END AS deal_period_cents,
+      COALESCE(c.completed_cents,0) AS completed_cents,
+      COALESCE(t.received_cents,0) AS received_cents,
+      COALESCE(t.expense_cents,0) AS expense_cents,
+      COALESCE(cc.completed_cumulative_cents,0) AS completed_cumulative_cents,
+      COALESCE(tc.received_cumulative_cents,0) AS received_cumulative_cents,
+      COALESCE(team.members_count,0) AS members_count
     FROM projects p
-    LEFT JOIN (
-      SELECT t.project_id,
-        SUM(CASE WHEN c.type = 'income' THEN t.amount_cents ELSE 0 END) AS income_cents,
-        SUM(CASE WHEN c.type = 'expense' THEN t.amount_cents ELSE 0 END) AS expense_cents
-      FROM transactions t
-      JOIN categories c ON c.id = t.category_id
-      GROUP BY t.project_id
-    ) fin ON fin.project_id = p.id
-    LEFT JOIN (
-      SELECT project_id, COUNT(*) AS members_count
-      FROM project_members
-      GROUP BY project_id
-    ) team ON team.project_id = p.id
-    ${where}
-    ORDER BY p.created_at DESC, p.id DESC
-  `).all(...(projectId ? [projectId] : []));
-
-  return rows.map(({ income_cents, expense_cents, ...row }) => ({
-    ...row,
-    ...calculateMetricsFromCents(income_cents, expense_cents),
-  }));
+    LEFT JOIN employees m ON m.id=p.manager_employee_id
+    LEFT JOIN (SELECT project_id,SUM(amount_cents) completed_cents FROM completions WHERE completion_date BETWEEN ? AND ? GROUP BY project_id) c ON c.project_id=p.id
+    LEFT JOIN (SELECT t.project_id,
+      SUM(CASE WHEN cat.type='income' THEN t.amount_cents ELSE 0 END) received_cents,
+      SUM(CASE WHEN cat.type='expense' THEN t.amount_cents ELSE 0 END) expense_cents
+      FROM transactions t JOIN categories cat ON cat.id=t.category_id
+      WHERE t.transaction_date BETWEEN ? AND ? GROUP BY t.project_id) t ON t.project_id=p.id
+    LEFT JOIN (SELECT project_id,SUM(amount_cents) completed_cumulative_cents FROM completions WHERE completion_date<=? GROUP BY project_id) cc ON cc.project_id=p.id
+    LEFT JOIN (SELECT t.project_id,SUM(CASE WHEN cat.type='income' THEN t.amount_cents ELSE 0 END) received_cumulative_cents
+      FROM transactions t JOIN categories cat ON cat.id=t.category_id WHERE t.transaction_date<=? GROUP BY t.project_id) tc ON tc.project_id=p.id
+    LEFT JOIN (SELECT project_id,COUNT(*) members_count FROM project_members GROUP BY project_id) team ON team.project_id=p.id
+    ${where} ORDER BY COALESCE(p.deal_date,p.created_at) DESC,p.id DESC
+  `).all(...params);
+  return rows.map(row=>{const metrics=calculateProjectMetricsFromCents({dealCents:row.deal_amount_cents,completedCents:row.completed_cents,receivedCents:row.received_cents,expenseCents:row.expense_cents,completedCumulativeCents:row.completed_cumulative_cents,receivedCumulativeCents:row.received_cumulative_cents});return{
+    id:row.id,name:row.name,client:row.client,description:row.description,status:row.status,deal_date:row.deal_date,
+    deal_amount:centsToMoney(row.deal_amount_cents),deal_amount_period:centsToMoney(row.deal_period_cents),manager_employee_id:row.manager_employee_id,
+    manager:row.manager_employee_id?{id:row.manager_employee_id,name:row.manager_name,email:row.manager_email}:null,
+    attention_required:Boolean(row.attention_required),attention_reason:row.attention_reason,members_count:row.members_count,created_at:row.created_at,updated_at:row.updated_at,...metrics};})
 }
+function dashboardTotals(projects){const cents=(n)=>Math.round((Number(n)||0)*100);const totals={deal_amount:projects.reduce((s,p)=>s+p.deal_amount_period,0),completed:projects.reduce((s,p)=>s+p.completed,0),received:projects.reduce((s,p)=>s+p.received,0),expenses:projects.reduce((s,p)=>s+p.expenses,0),completed_cumulative:projects.reduce((s,p)=>s+p.completed_cumulative,0),received_cumulative:projects.reduce((s,p)=>s+p.received_cumulative,0),receivable:projects.reduce((s,p)=>s+p.receivable,0),advance:projects.reduce((s,p)=>s+p.advance,0)};totals.profit=totals.completed-totals.expenses;totals.profitability=totals.completed>0?roundPercent(totals.profit/totals.completed*100):0;return totals}
+function serializeTransaction(row){const{amount_cents,...rest}=row;return{...rest,amount:centsToMoney(amount_cents)}}
+function serializeCompletion(row){const{amount_cents,...rest}=row;return{...rest,amount:centsToMoney(amount_cents)}}
+function serializeDocument(row){const{amount_cents,...rest}=row;return{...rest,amount:centsToMoney(amount_cents)}}
 
-async function handleApi(req, res, url) {
-  const method = req.method || 'GET';
-  const parts = url.pathname.split('/').filter(Boolean);
-
-  if (method === 'GET' && url.pathname === '/api/health') {
-    return json(res, 200, { ok: true, service: 'bitrix24-project-finance' });
+async function handleApi(req,res,url){const method=req.method||'GET',parts=url.pathname.split('/').filter(Boolean),period=periodFromUrl(url);if(!period)return badRequest(res,'Некорректный период');
+  if(method==='GET'&&url.pathname==='/api/health')return json(res,200,{ok:true,service:'bitrix24-project-finance',model:'deal-completed-received-expenses'});
+  if(method==='GET'&&url.pathname==='/api/dashboard'){const projects=getProjectMetrics(null,period);return json(res,200,{period,totals:dashboardTotals(projects),projects})}
+  if(parts[1]==='projects'&&parts.length===2){
+    if(method==='GET')return json(res,200,getProjectMetrics(null,period));
+    if(method==='POST'){const b=await readJson(req),name=String(b.name||'').trim();if(!name)return badRequest(res,'Укажите название проекта');const status=['active','paused','done'].includes(b.status)?b.status:'active';const dealAmount=b.deal_amount===undefined?0:moneyToCents(b.deal_amount,{allowZero:true});if(dealAmount===null)return badRequest(res,'Некорректная сумма сделки');const dealDate=b.deal_date?normalizeDate(b.deal_date):null;if(b.deal_date&&!dealDate)return badRequest(res,'Некорректная дата сделки');const managerId=b.manager_employee_id?parseId(b.manager_employee_id):null;if(managerId&&!employeeExists(managerId))return badRequest(res,'Менеджер не найден');const r=db.prepare(`INSERT INTO projects(name,client,description,status,deal_amount_cents,deal_date,manager_employee_id,attention_required,attention_reason) VALUES(?,?,?,?,?,?,?,?,?)`).run(name,String(b.client||'').trim(),String(b.description||'').trim(),status,dealAmount,dealDate,managerId,b.attention_required?1:0,String(b.attention_reason||'').trim());return json(res,201,getProjectMetrics(Number(r.lastInsertRowid),period)[0])}
   }
+  if(parts[1]==='projects'&&parts.length===3){const id=parseId(parts[2]);if(!id)return badRequest(res,'Некорректный id проекта');if(method==='GET'){const project=getProjectMetrics(id,period)[0];if(!project)return notFound(res);const members=db.prepare(`SELECT e.id,e.name,e.email,e.bitrix_user_id,e.role AS employee_role,pm.role FROM project_members pm JOIN employees e ON e.id=pm.employee_id WHERE pm.project_id=? ORDER BY e.name`).all(id);const transactions=db.prepare(`SELECT t.*,c.name category_name,c.type,e.name employee_name FROM transactions t JOIN categories c ON c.id=t.category_id LEFT JOIN employees e ON e.id=t.employee_id WHERE t.project_id=? ORDER BY t.transaction_date DESC,t.id DESC`).all(id).map(serializeTransaction);const completions=db.prepare('SELECT * FROM completions WHERE project_id=? ORDER BY completion_date DESC,id DESC').all(id).map(serializeCompletion);const documents=db.prepare('SELECT * FROM documents WHERE project_id=? ORDER BY document_date DESC,id DESC').all(id).map(serializeDocument);return json(res,200,{...project,members,transactions,completions,documents})}
+    if(method==='PATCH'){if(!projectExists(id))return notFound(res);const b=await readJson(req),cur=db.prepare('SELECT * FROM projects WHERE id=?').get(id),name=b.name!==undefined?String(b.name).trim():cur.name;if(!name)return badRequest(res,'Название проекта не может быть пустым');const status=b.status!==undefined?b.status:cur.status;if(!['active','paused','done'].includes(status))return badRequest(res,'Некорректный статус');const dealAmount=b.deal_amount!==undefined?moneyToCents(b.deal_amount,{allowZero:true}):cur.deal_amount_cents;if(dealAmount===null)return badRequest(res,'Некорректная сумма сделки');const dealDate=b.deal_date!==undefined?(b.deal_date?normalizeDate(b.deal_date):null):cur.deal_date;if(b.deal_date!==undefined&&b.deal_date&&!dealDate)return badRequest(res,'Некорректная дата сделки');const managerId=b.manager_employee_id!==undefined?(b.manager_employee_id?parseId(b.manager_employee_id):null):cur.manager_employee_id;if(managerId&&!employeeExists(managerId))return badRequest(res,'Менеджер не найден');db.prepare(`UPDATE projects SET name=?,client=?,description=?,status=?,deal_amount_cents=?,deal_date=?,manager_employee_id=?,attention_required=?,attention_reason=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`).run(name,b.client!==undefined?String(b.client).trim():cur.client,b.description!==undefined?String(b.description).trim():cur.description,status,dealAmount,dealDate,managerId,b.attention_required!==undefined?(b.attention_required?1:0):cur.attention_required,b.attention_reason!==undefined?String(b.attention_reason).trim():cur.attention_reason,id);return json(res,200,getProjectMetrics(id,period)[0])}}
+  if(parts[1]==='projects'&&parts[3]==='members'&&parts.length===4&&method==='POST'){const projectId=parseId(parts[2]);if(!projectId||!projectExists(projectId))return notFound(res);const b=await readJson(req),employeeId=parseId(b.employee_id);if(!employeeId||!employeeExists(employeeId))return badRequest(res,'Сотрудник не найден');db.prepare(`INSERT INTO project_members(project_id,employee_id,role) VALUES(?,?,?) ON CONFLICT(project_id,employee_id) DO UPDATE SET role=excluded.role`).run(projectId,employeeId,String(b.role||'').trim());return json(res,201,{ok:true})}
+  if(parts[1]==='projects'&&parts[3]==='members'&&parts.length===5&&method==='DELETE'){const projectId=parseId(parts[2]),employeeId=parseId(parts[4]);if(!projectId||!employeeId)return badRequest(res,'Некорректный id');db.prepare('DELETE FROM project_members WHERE project_id=? AND employee_id=?').run(projectId,employeeId);return json(res,200,{ok:true})}
 
-  if (method === 'GET' && url.pathname === '/api/dashboard') {
-    const projects = getProjectMetrics();
-    const totalsRow = db.prepare(`
-      SELECT
-        COALESCE(SUM(CASE WHEN c.type = 'income' THEN t.amount_cents ELSE 0 END), 0) AS income_cents,
-        COALESCE(SUM(CASE WHEN c.type = 'expense' THEN t.amount_cents ELSE 0 END), 0) AS expense_cents
-      FROM transactions t
-      JOIN categories c ON c.id = t.category_id
-    `).get();
-    return json(res, 200, {
-      totals: calculateMetricsFromCents(totalsRow.income_cents, totalsRow.expense_cents),
-      projects,
-    });
-  }
+  if(parts[1]==='categories'&&parts.length===2){if(method==='GET'){const type=url.searchParams.get('type');return json(res,200,type?db.prepare('SELECT * FROM categories WHERE type=? ORDER BY is_default DESC,name').all(type):db.prepare('SELECT * FROM categories ORDER BY type,is_default DESC,name').all())}if(method==='POST'){const b=await readJson(req),name=String(b.name||'').trim(),type=normalizeType(b.type);if(!name||!type)return badRequest(res,'Укажите название и тип статьи');try{const r=db.prepare('INSERT INTO categories(name,type,is_default) VALUES(?,?,0)').run(name,type);return json(res,201,db.prepare('SELECT * FROM categories WHERE id=?').get(Number(r.lastInsertRowid)))}catch(e){if(String(e.message).includes('UNIQUE'))return badRequest(res,'Такая статья уже существует');throw e}}}
+  if(parts[1]==='employees'&&parts.length===2){if(method==='GET')return json(res,200,db.prepare('SELECT * FROM employees ORDER BY name').all());if(method==='POST'){const b=await readJson(req),name=String(b.name||'').trim();if(!name)return badRequest(res,'Укажите имя сотрудника');const r=db.prepare('INSERT INTO employees(name,email,bitrix_user_id,role) VALUES(?,?,?,?)').run(name,String(b.email||'').trim(),String(b.bitrix_user_id||'').trim(),String(b.role||'').trim());return json(res,201,db.prepare('SELECT * FROM employees WHERE id=?').get(Number(r.lastInsertRowid)))}}
 
-  if (parts[1] === 'projects' && parts.length === 2) {
-    if (method === 'GET') return json(res, 200, getProjectMetrics());
-    if (method === 'POST') {
-      const body = await readJson(req);
-      const name = String(body.name || '').trim();
-      if (!name) return badRequest(res, 'Укажите название проекта');
-      const status = ['active', 'paused', 'done'].includes(body.status) ? body.status : 'active';
-      const result = db.prepare(`INSERT INTO projects (name, client, description, status)
-        VALUES (?, ?, ?, ?)`).run(name, String(body.client || '').trim(), String(body.description || '').trim(), status);
-      return json(res, 201, getProjectMetrics(Number(result.lastInsertRowid))[0]);
-    }
-  }
+  if(parts[1]==='completions'&&parts.length===2){if(method==='GET'){const projectId=url.searchParams.get('project_id')?parseId(url.searchParams.get('project_id')):null;const args=[period.from,period.to];let where='WHERE completion_date BETWEEN ? AND ?';if(projectId){where+=' AND project_id=?';args.push(projectId)}return json(res,200,db.prepare(`SELECT * FROM completions ${where} ORDER BY completion_date DESC,id DESC`).all(...args).map(serializeCompletion))}if(method==='POST'){const b=await readJson(req),projectId=parseId(b.project_id),amount=moneyToCents(b.amount),date=normalizeDate(b.completion_date);if(!projectId||!projectExists(projectId))return badRequest(res,'Проект не найден');if(!amount)return badRequest(res,'Некорректная сумма выполнения');if(!date)return badRequest(res,'Укажите дату выполнения');const creator=String(req.headers['x-bitrix-user']||b.created_by||'').slice(0,200);const r=db.prepare(`INSERT INTO completions(project_id,amount_cents,completion_date,document,comment,created_by) VALUES(?,?,?,?,?,?)`).run(projectId,amount,date,String(b.document||'').trim(),String(b.comment||'').trim(),creator);return json(res,201,serializeCompletion(db.prepare('SELECT * FROM completions WHERE id=?').get(Number(r.lastInsertRowid))))}}
+  if(parts[1]==='completions'&&parts.length===3){const id=parseId(parts[2]);if(!id)return badRequest(res,'Некорректный id выполнения');if(method==='DELETE'){db.prepare('DELETE FROM completions WHERE id=?').run(id);return json(res,200,{ok:true})}}
 
-  if (parts[1] === 'projects' && parts.length === 3) {
-    const id = parseId(parts[2]);
-    if (!id) return badRequest(res, 'Некорректный id проекта');
-    if (method === 'GET') {
-      const project = getProjectMetrics(id)[0];
-      if (!project) return notFound(res);
-      const members = db.prepare(`
-        SELECT e.id, e.name, e.email, e.bitrix_user_id, pm.role
-        FROM project_members pm JOIN employees e ON e.id = pm.employee_id
-        WHERE pm.project_id = ? ORDER BY e.name
-      `).all(id);
-      const transactions = db.prepare(`
-        SELECT t.id, t.amount_cents, t.transaction_date, t.comment, t.created_by, t.created_at,
-               c.id AS category_id, c.name AS category_name, c.type
-        FROM transactions t JOIN categories c ON c.id = t.category_id
-        WHERE t.project_id = ? ORDER BY t.transaction_date DESC, t.id DESC
-      `).all(id).map(({ amount_cents, ...transaction }) => ({
-        ...transaction,
-        amount: centsToMoney(amount_cents),
-      }));
-      return json(res, 200, { ...project, members, transactions });
-    }
-    if (method === 'PATCH') {
-      if (!projectExists(id)) return notFound(res);
-      const body = await readJson(req);
-      const current = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
-      const name = body.name !== undefined ? String(body.name).trim() : current.name;
-      if (!name) return badRequest(res, 'Название проекта не может быть пустым');
-      const status = body.status !== undefined ? body.status : current.status;
-      if (!['active','paused','done'].includes(status)) return badRequest(res, 'Некорректный статус');
-      db.prepare(`UPDATE projects SET name=?, client=?, description=?, status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
-        .run(name, body.client !== undefined ? String(body.client).trim() : current.client,
-          body.description !== undefined ? String(body.description).trim() : current.description, status, id);
-      return json(res, 200, getProjectMetrics(id)[0]);
-    }
-  }
+  if(parts[1]==='transactions'&&parts.length===2){if(method==='GET'){const type=normalizeType(url.searchParams.get('type')),projectId=url.searchParams.get('project_id')?parseId(url.searchParams.get('project_id')):null,categoryId=url.searchParams.get('category_id')?parseId(url.searchParams.get('category_id')):null,employeeId=url.searchParams.get('employee_id')?parseId(url.searchParams.get('employee_id')):null;const args=[period.from,period.to];let where='WHERE t.transaction_date BETWEEN ? AND ?';if(type){where+=' AND c.type=?';args.push(type)}if(projectId){where+=' AND t.project_id=?';args.push(projectId)}if(categoryId){where+=' AND t.category_id=?';args.push(categoryId)}if(employeeId){where+=' AND t.employee_id=?';args.push(employeeId)}const rows=db.prepare(`SELECT t.*,c.name category_name,c.type,e.name employee_name,p.name project_name FROM transactions t JOIN categories c ON c.id=t.category_id JOIN projects p ON p.id=t.project_id LEFT JOIN employees e ON e.id=t.employee_id ${where} ORDER BY t.transaction_date DESC,t.id DESC`).all(...args).map(serializeTransaction);return json(res,200,rows)}if(method==='POST'){const b=await readJson(req),projectId=parseId(b.project_id),categoryId=parseId(b.category_id),amount=moneyToCents(b.amount),date=normalizeDate(b.transaction_date),employeeId=b.employee_id?parseId(b.employee_id):null;if(!projectId||!projectExists(projectId))return badRequest(res,'Проект не найден');const category=categoryId?db.prepare('SELECT * FROM categories WHERE id=?').get(categoryId):null;if(!category)return badRequest(res,'Статья не найдена');if(!amount)return badRequest(res,'Сумма должна быть больше нуля и содержать не более 2 знаков после запятой');if(!date)return badRequest(res,'Укажите дату');if(employeeId&&!employeeExists(employeeId))return badRequest(res,'Сотрудник не найден');const creator=String(req.headers['x-bitrix-user']||b.created_by||'').slice(0,200);const r=db.prepare(`INSERT INTO transactions(project_id,category_id,employee_id,counterparty,amount_cents,transaction_date,comment,created_by) VALUES(?,?,?,?,?,?,?,?)`).run(projectId,categoryId,employeeId,String(b.counterparty||'').trim(),amount,date,String(b.comment||'').trim(),creator);const row=db.prepare(`SELECT t.*,c.name category_name,c.type,e.name employee_name FROM transactions t JOIN categories c ON c.id=t.category_id LEFT JOIN employees e ON e.id=t.employee_id WHERE t.id=?`).get(Number(r.lastInsertRowid));return json(res,201,serializeTransaction(row))}}
+  if(parts[1]==='transactions'&&parts.length===3){const id=parseId(parts[2]);if(!id)return badRequest(res,'Некорректный id операции');if(method==='DELETE'){db.prepare('DELETE FROM transactions WHERE id=?').run(id);return json(res,200,{ok:true})}}
 
-  if (parts[1] === 'projects' && parts[3] === 'members' && parts.length === 4 && method === 'POST') {
-    const projectId = parseId(parts[2]);
-    if (!projectId || !projectExists(projectId)) return notFound(res);
-    const body = await readJson(req);
-    const employeeId = parseId(body.employee_id);
-    if (!employeeId || !db.prepare('SELECT 1 FROM employees WHERE id=?').get(employeeId)) return badRequest(res, 'Сотрудник не найден');
-    db.prepare(`INSERT INTO project_members (project_id, employee_id, role) VALUES (?, ?, ?)
-      ON CONFLICT(project_id, employee_id) DO UPDATE SET role=excluded.role`)
-      .run(projectId, employeeId, String(body.role || '').trim());
-    return json(res, 201, { ok: true });
-  }
+  if(parts[1]==='documents'&&parts.length===2){if(method==='GET'){const projectId=url.searchParams.get('project_id')?parseId(url.searchParams.get('project_id')):null,status=url.searchParams.get('sync_status');const args=[period.from,period.to];let where='WHERE d.document_date BETWEEN ? AND ?';if(projectId){where+=' AND d.project_id=?';args.push(projectId)}if(status&&['not_synced','pending','synced','error'].includes(status)){where+=' AND d.sync_status=?';args.push(status)}return json(res,200,db.prepare(`SELECT d.*,p.name project_name FROM documents d JOIN projects p ON p.id=d.project_id ${where} ORDER BY d.document_date DESC,d.id DESC`).all(...args).map(serializeDocument))}if(method==='POST'){const b=await readJson(req),projectId=parseId(b.project_id),date=normalizeDate(b.document_date),amount=b.amount===undefined?0:moneyToCents(b.amount,{allowZero:true}),type=String(b.document_type||'').trim(),status=['not_synced','pending','synced','error'].includes(b.sync_status)?b.sync_status:'not_synced';if(!projectId||!projectExists(projectId))return badRequest(res,'Проект не найден');if(!type)return badRequest(res,'Укажите тип документа');if(!date)return badRequest(res,'Укажите дату документа');if(amount===null)return badRequest(res,'Некорректная сумма документа');const r=db.prepare(`INSERT INTO documents(project_id,document_type,document_date,amount_cents,source,sync_status,external_id,comment) VALUES(?,?,?,?,?,?,?,?)`).run(projectId,type,date,amount,String(b.source||'manual').trim(),status,String(b.external_id||'').trim(),String(b.comment||'').trim());return json(res,201,serializeDocument(db.prepare('SELECT * FROM documents WHERE id=?').get(Number(r.lastInsertRowid))))}}
 
-  if (parts[1] === 'projects' && parts[3] === 'members' && parts.length === 5 && method === 'DELETE') {
-    const projectId = parseId(parts[2]);
-    const employeeId = parseId(parts[4]);
-    if (!projectId || !employeeId) return badRequest(res, 'Некорректный id');
-    db.prepare('DELETE FROM project_members WHERE project_id=? AND employee_id=?').run(projectId, employeeId);
-    return json(res, 200, { ok: true });
-  }
-
-  if (parts[1] === 'categories' && parts.length === 2) {
-    if (method === 'GET') {
-      const type = url.searchParams.get('type');
-      const rows = type
-        ? db.prepare('SELECT * FROM categories WHERE type=? ORDER BY is_default DESC, name').all(type)
-        : db.prepare('SELECT * FROM categories ORDER BY type, is_default DESC, name').all();
-      return json(res, 200, rows);
-    }
-    if (method === 'POST') {
-      const body = await readJson(req);
-      const name = String(body.name || '').trim();
-      const type = normalizeType(body.type);
-      if (!name || !type) return badRequest(res, 'Укажите название и тип статьи');
-      try {
-        const result = db.prepare('INSERT INTO categories (name, type, is_default) VALUES (?, ?, 0)').run(name, type);
-        return json(res, 201, db.prepare('SELECT * FROM categories WHERE id=?').get(Number(result.lastInsertRowid)));
-      } catch (e) {
-        if (String(e.message).includes('UNIQUE')) return badRequest(res, 'Такая статья уже существует');
-        throw e;
-      }
-    }
-  }
-
-  if (parts[1] === 'employees' && parts.length === 2) {
-    if (method === 'GET') return json(res, 200, db.prepare('SELECT * FROM employees ORDER BY name').all());
-    if (method === 'POST') {
-      const body = await readJson(req);
-      const name = String(body.name || '').trim();
-      if (!name) return badRequest(res, 'Укажите имя сотрудника');
-      const result = db.prepare('INSERT INTO employees (name, email, bitrix_user_id) VALUES (?, ?, ?)')
-        .run(name, String(body.email || '').trim(), String(body.bitrix_user_id || '').trim());
-      return json(res, 201, db.prepare('SELECT * FROM employees WHERE id=?').get(Number(result.lastInsertRowid)));
-    }
-  }
-
-  if (parts[1] === 'transactions' && parts.length === 2 && method === 'POST') {
-    const body = await readJson(req);
-    const projectId = parseId(body.project_id);
-    const categoryId = parseId(body.category_id);
-    const amountCents = moneyToCents(body.amount);
-    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(body.transaction_date || '')) ? body.transaction_date : null;
-    if (!projectId || !projectExists(projectId)) return badRequest(res, 'Проект не найден');
-    const category = categoryId ? db.prepare('SELECT * FROM categories WHERE id=?').get(categoryId) : null;
-    if (!category) return badRequest(res, 'Статья не найдена');
-    if (!amountCents) return badRequest(res, 'Сумма должна быть больше нуля и содержать не более 2 знаков после запятой');
-    if (!date) return badRequest(res, 'Укажите дату');
-    const creator = String(req.headers['x-bitrix-user'] || body.created_by || '').slice(0, 200);
-    const result = db.prepare(`INSERT INTO transactions
-      (project_id, category_id, amount_cents, transaction_date, comment, created_by)
-      VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(projectId, categoryId, amountCents, date, String(body.comment || '').trim(), creator);
-    const created = db.prepare(`
-      SELECT t.id, t.amount_cents, t.transaction_date, t.comment, t.created_by, t.created_at,
-             c.id AS category_id, c.name AS category_name, c.type
-      FROM transactions t JOIN categories c ON c.id=t.category_id WHERE t.id=?
-    `).get(Number(result.lastInsertRowid));
-    const { amount_cents, ...transaction } = created;
-    return json(res, 201, { ...transaction, amount: centsToMoney(amount_cents) });
-  }
-
-  if (parts[1] === 'transactions' && parts.length === 3) {
-    const id = parseId(parts[2]);
-    if (!id) return badRequest(res, 'Некорректный id операции');
-    if (method === 'DELETE') {
-      db.prepare('DELETE FROM transactions WHERE id=?').run(id);
-      return json(res, 200, { ok: true });
-    }
-    if (method === 'PATCH') {
-      const current = db.prepare('SELECT * FROM transactions WHERE id=?').get(id);
-      if (!current) return notFound(res);
-      const body = await readJson(req);
-      const categoryId = body.category_id !== undefined ? parseId(body.category_id) : current.category_id;
-      const amountCents = body.amount !== undefined ? moneyToCents(body.amount) : current.amount_cents;
-      const date = body.transaction_date !== undefined ? String(body.transaction_date) : current.transaction_date;
-      if (!db.prepare('SELECT 1 FROM categories WHERE id=?').get(categoryId)) return badRequest(res, 'Статья не найдена');
-      if (!amountCents) return badRequest(res, 'Сумма должна быть больше нуля и содержать не более 2 знаков после запятой');
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return badRequest(res, 'Некорректная дата');
-      db.prepare(`UPDATE transactions SET category_id=?, amount_cents=?, transaction_date=?, comment=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
-        .run(categoryId, amountCents, date,
-          body.comment !== undefined ? String(body.comment).trim() : current.comment, id);
-      return json(res, 200, { ok: true });
-    }
-  }
-
-  return notFound(res);
+  return notFound(res)
 }
-
-function serveStatic(req, res, url) {
-  let relative = decodeURIComponent(url.pathname);
-  if (relative === '/') relative = '/index.html';
-  const file = path.resolve(publicDir, '.' + relative);
-  if (!file.startsWith(publicDir)) return notFound(res);
-
-  try {
-    const stat = fs.statSync(file);
-    if (!stat.isFile()) return notFound(res);
-    const ext = path.extname(file);
-    res.writeHead(200, {
-      'Content-Type': MIME[ext] || 'application/octet-stream',
-      'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=3600',
-    });
-    fs.createReadStream(file).pipe(res);
-  } catch {
-    // SPA fallback
-    if (!path.extname(relative)) {
-      res.writeHead(200, { 'Content-Type': MIME['.html'], 'Cache-Control': 'no-cache' });
-      fs.createReadStream(path.join(publicDir, 'index.html')).pipe(res);
-    } else {
-      notFound(res);
-    }
-  }
-}
-
-export function createServer() {
-  return http.createServer(async (req, res) => {
-    const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
-    try {
-      if (url.pathname.startsWith('/api/')) await handleApi(req, res, url);
-      else serveStatic(req, res, url);
-    } catch (error) {
-      const message = error?.message === 'INVALID_JSON' ? 'Некорректный JSON'
-        : error?.message === 'PAYLOAD_TOO_LARGE' ? 'Слишком большой запрос'
-        : 'Внутренняя ошибка сервера';
-      if (!res.headersSent) json(res, error?.message === 'INVALID_JSON' || error?.message === 'PAYLOAD_TOO_LARGE' ? 400 : 500, { error: message });
-      console.error(error);
-    }
-  });
-}
-
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  createServer().listen(port, () => {
-    console.log(`Project Finance: http://localhost:${port}`);
-  });
-}
+function serveStatic(req,res,url){let relative=decodeURIComponent(url.pathname);if(relative==='/')relative='/index.html';const file=path.resolve(publicDir,'.'+relative);if(!file.startsWith(publicDir))return notFound(res);try{const stat=fs.statSync(file);if(!stat.isFile())return notFound(res);const ext=path.extname(file);res.writeHead(200,{'Content-Type':MIME[ext]||'application/octet-stream','Cache-Control':ext==='.html'?'no-cache':'public, max-age=3600'});fs.createReadStream(file).pipe(res)}catch{if(!path.extname(relative)){res.writeHead(200,{'Content-Type':MIME['.html'],'Cache-Control':'no-cache'});fs.createReadStream(path.join(publicDir,'index.html')).pipe(res)}else notFound(res)}}
+export function createServer(){return http.createServer(async(req,res)=>{const url=new URL(req.url||'/',`http://${req.headers.host||'localhost'}`);try{if(url.pathname.startsWith('/api/'))await handleApi(req,res,url);else serveStatic(req,res,url)}catch(error){const message=error?.message==='INVALID_JSON'?'Некорректный JSON':error?.message==='PAYLOAD_TOO_LARGE'?'Слишком большой запрос':'Внутренняя ошибка сервера';if(!res.headersSent)json(res,error?.message==='INVALID_JSON'||error?.message==='PAYLOAD_TOO_LARGE'?400:500,{error:message});console.error(error)}})}
+if(process.argv[1]===fileURLToPath(import.meta.url)){createServer().listen(port,()=>console.log(`Project Finance: http://localhost:${port}`))}
