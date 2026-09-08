@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { db, initDb } from './db.js';
-import { calculateMetrics } from './finance.js';
+import { calculateMetricsFromCents, centsToMoney, moneyToCents } from './finance.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(__dirname, '../public');
@@ -71,14 +71,14 @@ function getProjectMetrics(projectId = null) {
   // directly would multiply transaction amounts by the number of project members.
   const rows = db.prepare(`
     SELECT p.id, p.name, p.client, p.description, p.status, p.created_at,
-      COALESCE(fin.income, 0) AS income,
-      COALESCE(fin.expense, 0) AS expense,
+      COALESCE(fin.income_cents, 0) AS income_cents,
+      COALESCE(fin.expense_cents, 0) AS expense_cents,
       COALESCE(team.members_count, 0) AS members_count
     FROM projects p
     LEFT JOIN (
       SELECT t.project_id,
-        SUM(CASE WHEN c.type = 'income' THEN t.amount ELSE 0 END) AS income,
-        SUM(CASE WHEN c.type = 'expense' THEN t.amount ELSE 0 END) AS expense
+        SUM(CASE WHEN c.type = 'income' THEN t.amount_cents ELSE 0 END) AS income_cents,
+        SUM(CASE WHEN c.type = 'expense' THEN t.amount_cents ELSE 0 END) AS expense_cents
       FROM transactions t
       JOIN categories c ON c.id = t.category_id
       GROUP BY t.project_id
@@ -92,7 +92,10 @@ function getProjectMetrics(projectId = null) {
     ORDER BY p.created_at DESC, p.id DESC
   `).all(...(projectId ? [projectId] : []));
 
-  return rows.map(row => ({ ...row, ...calculateMetrics(row.income, row.expense) }));
+  return rows.map(({ income_cents, expense_cents, ...row }) => ({
+    ...row,
+    ...calculateMetricsFromCents(income_cents, expense_cents),
+  }));
 }
 
 async function handleApi(req, res, url) {
@@ -105,12 +108,17 @@ async function handleApi(req, res, url) {
 
   if (method === 'GET' && url.pathname === '/api/dashboard') {
     const projects = getProjectMetrics();
-    const totals = projects.reduce((acc, project) => {
-      acc.income += project.income;
-      acc.expense += project.expense;
-      return acc;
-    }, { income: 0, expense: 0 });
-    return json(res, 200, { totals: calculateMetrics(totals.income, totals.expense), projects });
+    const totalsRow = db.prepare(`
+      SELECT
+        COALESCE(SUM(CASE WHEN c.type = 'income' THEN t.amount_cents ELSE 0 END), 0) AS income_cents,
+        COALESCE(SUM(CASE WHEN c.type = 'expense' THEN t.amount_cents ELSE 0 END), 0) AS expense_cents
+      FROM transactions t
+      JOIN categories c ON c.id = t.category_id
+    `).get();
+    return json(res, 200, {
+      totals: calculateMetricsFromCents(totalsRow.income_cents, totalsRow.expense_cents),
+      projects,
+    });
   }
 
   if (parts[1] === 'projects' && parts.length === 2) {
@@ -138,11 +146,14 @@ async function handleApi(req, res, url) {
         WHERE pm.project_id = ? ORDER BY e.name
       `).all(id);
       const transactions = db.prepare(`
-        SELECT t.id, t.amount, t.transaction_date, t.comment, t.created_by, t.created_at,
+        SELECT t.id, t.amount_cents, t.transaction_date, t.comment, t.created_by, t.created_at,
                c.id AS category_id, c.name AS category_name, c.type
         FROM transactions t JOIN categories c ON c.id = t.category_id
         WHERE t.project_id = ? ORDER BY t.transaction_date DESC, t.id DESC
-      `).all(id);
+      `).all(id).map(({ amount_cents, ...transaction }) => ({
+        ...transaction,
+        amount: centsToMoney(amount_cents),
+      }));
       return json(res, 200, { ...project, members, transactions });
     }
     if (method === 'PATCH') {
@@ -219,20 +230,25 @@ async function handleApi(req, res, url) {
     const body = await readJson(req);
     const projectId = parseId(body.project_id);
     const categoryId = parseId(body.category_id);
-    const amount = Number(body.amount);
+    const amountCents = moneyToCents(body.amount);
     const date = /^\d{4}-\d{2}-\d{2}$/.test(String(body.transaction_date || '')) ? body.transaction_date : null;
     if (!projectId || !projectExists(projectId)) return badRequest(res, 'Проект не найден');
     const category = categoryId ? db.prepare('SELECT * FROM categories WHERE id=?').get(categoryId) : null;
     if (!category) return badRequest(res, 'Статья не найдена');
-    if (!Number.isFinite(amount) || amount <= 0) return badRequest(res, 'Сумма должна быть больше нуля');
+    if (!amountCents) return badRequest(res, 'Сумма должна быть больше нуля и содержать не более 2 знаков после запятой');
     if (!date) return badRequest(res, 'Укажите дату');
     const creator = String(req.headers['x-bitrix-user'] || body.created_by || '').slice(0, 200);
     const result = db.prepare(`INSERT INTO transactions
-      (project_id, category_id, amount, transaction_date, comment, created_by)
+      (project_id, category_id, amount_cents, transaction_date, comment, created_by)
       VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(projectId, categoryId, Math.round(amount * 100) / 100, date, String(body.comment || '').trim(), creator);
-    return json(res, 201, db.prepare(`SELECT t.*, c.name AS category_name, c.type FROM transactions t JOIN categories c ON c.id=t.category_id WHERE t.id=?`)
-      .get(Number(result.lastInsertRowid)));
+      .run(projectId, categoryId, amountCents, date, String(body.comment || '').trim(), creator);
+    const created = db.prepare(`
+      SELECT t.id, t.amount_cents, t.transaction_date, t.comment, t.created_by, t.created_at,
+             c.id AS category_id, c.name AS category_name, c.type
+      FROM transactions t JOIN categories c ON c.id=t.category_id WHERE t.id=?
+    `).get(Number(result.lastInsertRowid));
+    const { amount_cents, ...transaction } = created;
+    return json(res, 201, { ...transaction, amount: centsToMoney(amount_cents) });
   }
 
   if (parts[1] === 'transactions' && parts.length === 3) {
@@ -247,13 +263,13 @@ async function handleApi(req, res, url) {
       if (!current) return notFound(res);
       const body = await readJson(req);
       const categoryId = body.category_id !== undefined ? parseId(body.category_id) : current.category_id;
-      const amount = body.amount !== undefined ? Number(body.amount) : current.amount;
+      const amountCents = body.amount !== undefined ? moneyToCents(body.amount) : current.amount_cents;
       const date = body.transaction_date !== undefined ? String(body.transaction_date) : current.transaction_date;
       if (!db.prepare('SELECT 1 FROM categories WHERE id=?').get(categoryId)) return badRequest(res, 'Статья не найдена');
-      if (!Number.isFinite(amount) || amount <= 0) return badRequest(res, 'Сумма должна быть больше нуля');
+      if (!amountCents) return badRequest(res, 'Сумма должна быть больше нуля и содержать не более 2 знаков после запятой');
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return badRequest(res, 'Некорректная дата');
-      db.prepare(`UPDATE transactions SET category_id=?, amount=?, transaction_date=?, comment=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
-        .run(categoryId, Math.round(amount * 100) / 100, date,
+      db.prepare(`UPDATE transactions SET category_id=?, amount_cents=?, transaction_date=?, comment=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`)
+        .run(categoryId, amountCents, date,
           body.comment !== undefined ? String(body.comment).trim() : current.comment, id);
       return json(res, 200, { ok: true });
     }

@@ -54,19 +54,43 @@ test('project + income + expense produces correct dashboard metrics', async () =
   assert.equal(row.profitability, 75);
 });
 
-test('rejects zero and negative transaction amounts', async () => {
+test('stores decimal monetary amounts without floating-point drift', async () => {
+  const projectResponse = await fetch(`${base}/api/projects`, {
+    method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify({ name: 'Kopecks project' })
+  });
+  const project = await projectResponse.json();
+  const categories = await (await fetch(`${base}/api/categories`)).json();
+  const income = categories.find(c => c.type === 'income');
+
+  for (const amount of ['0.10', '0.20']) {
+    const response = await fetch(`${base}/api/transactions`, {
+      method: 'POST', headers: {'content-type':'application/json'},
+      body: JSON.stringify({ project_id: project.id, category_id: income.id, amount, transaction_date: '2026-09-08' })
+    });
+    assert.equal(response.status, 201);
+  }
+
+  const details = await (await fetch(`${base}/api/projects/${project.id}`)).json();
+  assert.deepEqual(details.transactions.map(tx => tx.amount).sort(), [0.1, 0.2]);
+  assert.equal(details.income, 0.3);
+  assert.equal(details.profit, 0.3);
+});
+
+test('rejects zero, negative and over-precise transaction amounts', async () => {
   const projects = await (await fetch(`${base}/api/projects`)).json();
   const categories = await (await fetch(`${base}/api/categories`)).json();
-  const response = await fetch(`${base}/api/transactions`, {
-    method: 'POST', headers: {'content-type':'application/json'},
-    body: JSON.stringify({ project_id: projects[0].id, category_id: categories[0].id, amount: 0, transaction_date: '2026-09-08' })
-  });
-  assert.equal(response.status, 400);
+  for (const amount of [0, -1, '10.001']) {
+    const response = await fetch(`${base}/api/transactions`, {
+      method: 'POST', headers: {'content-type':'application/json'},
+      body: JSON.stringify({ project_id: projects[0].id, category_id: categories[0].id, amount, transaction_date: '2026-09-08' })
+    });
+    assert.equal(response.status, 400);
+  }
 });
 
 test('adding multiple project members does not duplicate financial totals', async () => {
   const projects = await (await fetch(`${base}/api/projects`)).json();
-  const project = projects[0];
+  const project = projects.find(p => p.name === 'Test project');
   for (const name of ['Employee A', 'Employee B']) {
     const created = await (await fetch(`${base}/api/employees`, {
       method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({name})

@@ -8,7 +8,7 @@ const state = {
 const $ = (s, root=document) => root.querySelector(s);
 const $$ = (s, root=document) => [...root.querySelectorAll(s)];
 const content = $('#content');
-const fmt = new Intl.NumberFormat('ru-RU', { style:'currency', currency:'RUB', maximumFractionDigits:0 });
+const fmt = new Intl.NumberFormat('ru-RU', { style:'currency', currency:'RUB', minimumFractionDigits:2, maximumFractionDigits:2 });
 const fmtNumber = new Intl.NumberFormat('ru-RU');
 const today = () => new Date().toISOString().slice(0,10);
 

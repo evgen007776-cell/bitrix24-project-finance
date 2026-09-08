@@ -19,16 +19,16 @@ member.run(p2.lastInsertRowid, e3.lastInsertRowid, 'Разработчик');
 
 const cat = Object.fromEntries(db.prepare('SELECT id, name FROM categories').all().map(r => [r.name, r.id]));
 const tx = db.prepare(`INSERT INTO transactions
-  (project_id, category_id, amount, transaction_date, comment, created_by)
+  (project_id, category_id, amount_cents, transaction_date, comment, created_by)
   VALUES (?, ?, ?, ?, ?, ?)`);
 
 const today = new Date().toISOString().slice(0, 10);
-tx.run(p1.lastInsertRowid, cat['Оплата от клиента'], 480000, today, 'Этап 1', 'demo');
-tx.run(p1.lastInsertRowid, cat['Внутренние программисты'], 165000, today, 'Разработка', 'demo');
-tx.run(p1.lastInsertRowid, cat['Расходы на ИИ'], 18000, today, 'API и подписки', 'demo');
-tx.run(p1.lastInsertRowid, cat['Аренда сервера'], 12000, today, 'VPS', 'demo');
-tx.run(p2.lastInsertRowid, cat['Оплата от клиента'], 210000, today, 'Аванс', 'demo');
-tx.run(p2.lastInsertRowid, cat['Внешние программисты'], 95000, today, 'Frontend', 'demo');
-tx.run(p2.lastInsertRowid, cat['Расходы на ИИ'], 9000, today, 'ИИ-инструменты', 'demo');
+tx.run(p1.lastInsertRowid, cat['Оплата от клиента'], 48000000, today, 'Этап 1', 'demo');
+tx.run(p1.lastInsertRowid, cat['Внутренние программисты'], 16500000, today, 'Разработка', 'demo');
+tx.run(p1.lastInsertRowid, cat['Расходы на ИИ'], 1800000, today, 'API и подписки', 'demo');
+tx.run(p1.lastInsertRowid, cat['Аренда сервера'], 1200000, today, 'VPS', 'demo');
+tx.run(p2.lastInsertRowid, cat['Оплата от клиента'], 21000000, today, 'Аванс', 'demo');
+tx.run(p2.lastInsertRowid, cat['Внешние программисты'], 9500000, today, 'Frontend', 'demo');
+tx.run(p2.lastInsertRowid, cat['Расходы на ИИ'], 900000, today, 'ИИ-инструменты', 'demo');
 
 console.log('Demo data created. Start with: npm start');

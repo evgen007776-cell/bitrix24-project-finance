@@ -14,6 +14,65 @@ db.exec('PRAGMA foreign_keys = ON;');
 db.exec('PRAGMA journal_mode = WAL;');
 db.exec('PRAGMA busy_timeout = 5000;');
 
+function createTransactionsTable() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL,
+      category_id INTEGER NOT NULL,
+      amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+      transaction_date TEXT NOT NULL,
+      comment TEXT NOT NULL DEFAULT '',
+      created_by TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+      FOREIGN KEY(category_id) REFERENCES categories(id) ON DELETE RESTRICT
+    );
+  `);
+}
+
+function migrateLegacyMoneyColumn() {
+  const columns = db.prepare('PRAGMA table_info(transactions)').all().map(row => row.name);
+  if (!columns.includes('amount') || columns.includes('amount_cents')) return;
+
+  db.exec('BEGIN IMMEDIATE;');
+  try {
+    db.exec(`
+      ALTER TABLE transactions RENAME TO transactions_legacy;
+
+      CREATE TABLE transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        project_id INTEGER NOT NULL,
+        category_id INTEGER NOT NULL,
+        amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
+        transaction_date TEXT NOT NULL,
+        comment TEXT NOT NULL DEFAULT '',
+        created_by TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(category_id) REFERENCES categories(id) ON DELETE RESTRICT
+      );
+
+      INSERT INTO transactions (
+        id, project_id, category_id, amount_cents, transaction_date,
+        comment, created_by, created_at, updated_at
+      )
+      SELECT
+        id, project_id, category_id, CAST(ROUND(amount * 100) AS INTEGER), transaction_date,
+        comment, created_by, created_at, updated_at
+      FROM transactions_legacy;
+
+      DROP TABLE transactions_legacy;
+    `);
+    db.exec('COMMIT;');
+  } catch (error) {
+    db.exec('ROLLBACK;');
+    throw error;
+  }
+}
+
 export function initDb() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS projects (
@@ -52,21 +111,12 @@ export function initDb() {
       FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
       FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE
     );
+  `);
 
-    CREATE TABLE IF NOT EXISTS transactions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      project_id INTEGER NOT NULL,
-      category_id INTEGER NOT NULL,
-      amount REAL NOT NULL CHECK(amount > 0),
-      transaction_date TEXT NOT NULL,
-      comment TEXT NOT NULL DEFAULT '',
-      created_by TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
-      FOREIGN KEY(category_id) REFERENCES categories(id) ON DELETE RESTRICT
-    );
+  createTransactionsTable();
+  migrateLegacyMoneyColumn();
 
+  db.exec(`
     CREATE INDEX IF NOT EXISTS idx_transactions_project ON transactions(project_id);
     CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(transaction_date);
     CREATE INDEX IF NOT EXISTS idx_categories_type ON categories(type);
