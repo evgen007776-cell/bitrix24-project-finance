@@ -1,99 +1,83 @@
 <!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Project Finance · Bitrix24</title>
-  <link rel="stylesheet" href="/app.css">
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Project Finance — экономика проектов</title>
+<meta name="theme-color" content="#6C53F5">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg?v=1.0.0">
+<link rel="alternate icon" href="/favicon.ico?v=1.0.0">
+<link rel="stylesheet" href="/app.css?v=1.0.0"/>
 </head>
 <body>
-  <div class="app-shell">
-    <aside class="sidebar">
-      <div class="brand">
-        <div class="brand-mark">PF</div>
-        <div><strong>Project Finance</strong><span>для Битрикс24</span></div>
-      </div>
-      <nav>
-        <button class="nav-item active" data-view="dashboard"><span>⌂</span> Обзор</button>
-        <button class="nav-item" data-view="projects"><span>▦</span> Проекты</button>
-        <button class="nav-item" data-view="categories"><span>≡</span> Статьи</button>
-        <button class="nav-item" data-view="employees"><span>♙</span> Сотрудники</button>
-      </nav>
-      <div class="sidebar-bottom">
-        <div class="integration-state">
-          <span class="dot"></span>
-          <div><b id="integrationTitle">Локальный режим</b><small id="integrationSubtitle">готово к встраиванию</small></div>
-        </div>
-      </div>
-    </aside>
-
-    <main class="main">
-      <header class="topbar">
-        <div>
-          <h1 id="pageTitle">Экономика проектов</h1>
-          <p id="pageSubtitle">Доходы, расходы и эффективность в одном месте</p>
-        </div>
-        <div class="top-actions">
-          <button class="btn secondary" id="addOperationBtn">+ Операция</button>
-          <button class="btn primary" id="addProjectBtn">+ Новый проект</button>
-        </div>
-      </header>
-      <section id="content" class="content"></section>
-    </main>
+<div class="app">
+<aside class="sidebar">
+  <div class="brand"><div class="brandmark">PF</div><div class="brand-copy"><strong>Project Finance</strong><small>Precision SaaS · Production</small></div></div>
+  <nav class="nav">
+    <button data-view="dashboard" class="active"><span class="ico">⌂</span><span class="label">Обзор</span></button>
+    <button data-view="operations"><span class="ico">↕</span><span class="label">Операции</span></button>
+    <button data-view="documents"><span class="ico">▤</span><span class="label">Документы</span></button>
+    <button data-view="categories"><span class="ico">≡</span><span class="label">Статьи</span></button>
+    <button data-view="employees"><span class="ico">♙</span><span class="label">Сотрудники</span></button>
+  </nav>
+  <div class="side-bottom"><div class="side-note"><b>Production · единая база</b><br>Сделка → Выполнено → Получено → Расходы → Прибыль → Рентабельность → Дебиторка.<br><br><span id="integrationState">Локальный режим</span></div></div>
+</aside>
+<main class="main">
+<header class="topbar">
+  <div class="breadcrumb">Project Finance <b id="crumbCurrent">/ Обзор</b></div>
+  <div class="top-actions">
+    <div class="global-period" id="globalPeriod"></div>
+    <div class="theme-switch"><button id="lightBtn">☀</button><button id="darkBtn">◐</button></div>
+    <button class="iconbtn" id="userBadge">EV</button>
   </div>
+</header>
+<section class="page" id="content"><div class="loading">Загрузка данных…</div></section>
+</main>
+</div>
+<div class="toast" id="toast"></div>
 
-  <dialog id="projectDialog" class="dialog">
-    <form method="dialog" id="projectForm">
-      <div class="dialog-head"><div><small>Новый проект</small><h2>Добавить проект</h2></div><button class="icon-btn" type="button" data-close-dialog>×</button></div>
-      <label>Название проекта<input name="name" required placeholder="Например: CRM для отдела продаж"></label>
-      <label>Клиент<input name="client" placeholder="Название клиента"></label>
-      <label>Описание<textarea name="description" rows="3" placeholder="Коротко о проекте"></textarea></label>
-      <div class="dialog-actions"><button class="btn ghost" type="button" data-close-dialog>Отмена</button><button class="btn primary" value="default">Создать проект</button></div>
-    </form>
-  </dialog>
+<dialog id="projectDialog"><div class="modal-head"><div><h3>Новый проект</h3><p>Все поля обязательны. Сначала выберите роль менеджера, затем сотрудника.</p></div><button class="close" data-close>×</button></div><form class="form" id="projectForm">
+<div class="field"><label>Название *</label><input name="name" required></div>
+<div class="field"><label>Клиент *</label><input name="client" required></div>
+<div class="form-grid"><div class="field"><label>Роль менеджера *</label><select name="manager_role" required><option value="">Выберите роль</option></select><div class="form-help">Список формируется из ролей сотрудников.</div></div><div class="field"><label>Менеджер *</label><select name="manager_employee_id" required disabled><option value="">Сначала выберите роль</option></select></div></div>
+<div class="form-grid"><div class="field"><label>Сумма сделки, ₽ *</label><input name="deal_amount" type="number" min="0.01" step="0.01" required></div><div class="field"><label>Дата сделки *</label><input name="deal_date" type="date" required><div class="form-help">Эта дата определяет попадание суммы сделки в период Обзора.</div></div></div>
+<div class="field"><label>Описание *</label><textarea name="description" required></textarea></div>
+<div class="form-actions"><button class="btn" type="button" data-close>Отмена</button><button class="btn primary" type="submit" disabled>Создать</button></div></form></dialog>
 
-  <dialog id="operationDialog" class="dialog">
-    <form method="dialog" id="operationForm">
-      <div class="dialog-head"><div><small>Финансовая операция</small><h2>Добавить доход или расход</h2></div><button class="icon-btn" type="button" data-close-dialog>×</button></div>
-      <div class="segmented"><button type="button" data-tx-type="income" class="active">Доход</button><button type="button" data-tx-type="expense">Расход</button></div>
-      <input type="hidden" name="type" value="income">
-      <label>Проект<select name="project_id" required></select></label>
-      <label>Статья<div class="inline-field"><select name="category_id" required></select><button type="button" class="mini-btn" id="quickCategoryBtn">+</button></div></label>
-      <div class="form-grid"><label>Сумма, ₽<input name="amount" type="number" min="0.01" step="0.01" required placeholder="0"></label><label>Дата<input name="transaction_date" type="date" required></label></div>
-      <label>Комментарий<input name="comment" placeholder="Необязательно"></label>
-      <div class="dialog-actions"><button class="btn ghost" type="button" data-close-dialog>Отмена</button><button class="btn primary" value="default">Сохранить</button></div>
-    </form>
-  </dialog>
+<dialog id="operationDialog"><div class="modal-head"><div><h3>Финансовая операция</h3><p>Поступление денег от клиента или расход.</p></div><button class="close" data-close>×</button></div><form class="form" id="operationForm">
+<div class="form-grid"><div class="field"><label>Тип *</label><select name="type" required><option value="income">Получено от клиента</option><option value="expense">Расход</option></select></div><div class="field"><label>Дата *</label><input type="date" name="transaction_date" required></div></div>
+<div class="field"><label>Проект *</label><select name="project_id" required></select></div>
+<div class="field"><label>Статья *</label><select name="category_id" required></select></div>
+<div class="field" id="employeeField"><label>Сотрудник *</label><select name="employee_id"></select><div class="form-help">Для внутренних затрат можно привязать конкретного сотрудника.</div></div>
+<div class="field" id="counterpartyField" data-hidden="false"><label id="counterpartyLabel">Плательщик / контрагент *</label><input name="counterparty" placeholder="Например: ООО Тест / Selectel / подрядчик"><div class="form-help" id="counterpartyHelp">Для поступления укажите конкретного плательщика. Это важно, если один проект оплачивают несколько юрлиц.</div></div>
+<div class="field"><label>Сумма, ₽ *</label><input name="amount" type="number" step="0.01" min="0.01" required></div>
+<div class="field"><label>Комментарий *</label><input name="comment" required></div>
+<div class="form-actions"><button class="btn" type="button" data-close>Отмена</button><button class="btn primary" type="submit" disabled>Добавить</button></div></form></dialog>
 
-  <dialog id="categoryDialog" class="dialog small-dialog">
-    <form method="dialog" id="categoryForm">
-      <div class="dialog-head"><div><small>Справочник</small><h2>Новая статья</h2></div><button class="icon-btn" type="button" data-close-dialog>×</button></div>
-      <label>Тип<select name="type"><option value="income">Доход</option><option value="expense">Расход</option></select></label>
-      <label>Название<input name="name" required placeholder="Например: Лицензии ПО"></label>
-      <div class="dialog-actions"><button class="btn ghost" type="button" data-close-dialog>Отмена</button><button class="btn primary" value="default">Добавить</button></div>
-    </form>
-  </dialog>
+<dialog id="completionDialog"><div class="modal-head"><div><h3>Зафиксировать выполнение</h3><p>Закрытый объём работ / акт.</p></div><button class="close" data-close>×</button></div><form class="form" id="completionForm">
+<div class="form-grid"><div class="field"><label>Дата *</label><input type="date" name="completion_date" required></div><div class="field"><label>Проект *</label><select name="project_id" required></select></div></div>
+<div class="field"><label>Сумма выполненных работ, ₽ *</label><input name="amount" type="number" min="0.01" step="0.01" required></div>
+<div class="field"><label>Основание *</label><input name="document" placeholder="Акт №..." required></div>
+<div class="field"><label>Комментарий *</label><input name="comment" required></div>
+<div class="form-actions"><button class="btn" type="button" data-close>Отмена</button><button class="btn primary" type="submit" disabled>Зафиксировать</button></div></form></dialog>
 
-  <dialog id="employeeDialog" class="dialog small-dialog">
-    <form method="dialog" id="employeeForm">
-      <div class="dialog-head"><div><small>Команда</small><h2>Новый сотрудник</h2></div><button class="icon-btn" type="button" data-close-dialog>×</button></div>
-      <label>Имя<input name="name" required placeholder="Имя и фамилия"></label>
-      <label>Email<input name="email" type="email" placeholder="name@company.ru"></label>
-      <div class="dialog-actions"><button class="btn ghost" type="button" data-close-dialog>Отмена</button><button class="btn primary" value="default">Добавить</button></div>
-    </form>
-  </dialog>
+<dialog id="documentDialog"><div class="modal-head"><div><h3>Новый документ</h3><p>Первичный документ проекта.</p></div><button class="close" data-close>×</button></div><form class="form" id="documentForm">
+<div class="form-grid"><div class="field"><label>Проект *</label><select name="project_id" required></select></div><div class="field"><label>Дата *</label><input type="date" name="document_date" required></div></div>
+<div class="form-grid"><div class="field"><label>Тип документа *</label><input name="document_type" placeholder="Акт / Счёт / УПД" required></div><div class="field"><label>Сумма, ₽ *</label><input name="amount" type="number" min="0.01" step="0.01" required></div></div>
+<div class="form-grid"><div class="field"><label>Источник *</label><select name="source" required><option value="manual">Вручную</option><option value="bitrix24">Битрикс24</option><option value="1c">1С</option></select></div><div class="field"><label>Статус синхронизации *</label><select name="sync_status" required><option value="not_synced">Не синхронизирован</option><option value="pending">Ожидает</option><option value="synced">Синхронизирован</option><option value="error">Ошибка</option></select></div></div>
+<div class="field"><label>Комментарий *</label><input name="comment" required></div>
+<div class="form-actions"><button class="btn" type="button" data-close>Отмена</button><button class="btn primary" type="submit" disabled>Добавить</button></div></form></dialog>
 
-  <dialog id="memberDialog" class="dialog small-dialog">
-    <form method="dialog" id="memberForm">
-      <div class="dialog-head"><div><small>Команда проекта</small><h2>Добавить сотрудника</h2></div><button class="icon-btn" type="button" data-close-dialog>×</button></div>
-      <input type="hidden" name="project_id">
-      <label>Сотрудник<select name="employee_id" required></select></label>
-      <label>Роль<input name="role" placeholder="Например: Разработчик"></label>
-      <div class="dialog-actions"><button class="btn ghost" type="button" data-close-dialog>Отмена</button><button class="btn primary" value="default">Добавить</button></div>
-    </form>
-  </dialog>
+<dialog id="employeeDialog"><div class="modal-head"><div><h3>Новый сотрудник</h3><p>Все поля обязательны.</p></div><button class="close" data-close>×</button></div><form class="form" id="employeeForm"><div class="field"><label>Имя *</label><input name="name" required></div><div class="form-grid"><div class="field"><label>Email *</label><input name="email" type="email" required></div><div class="field"><label>Роль *</label><input name="role" placeholder="Project Manager / Backend Developer" required></div></div><div class="field"><label>Bitrix24 ID *</label><input name="bitrix_user_id" required></div><div class="form-actions"><button class="btn" type="button" data-close>Отмена</button><button class="btn primary" type="submit" disabled>Создать</button></div></form></dialog>
 
-  <div id="toast" class="toast"></div>
-  <script type="module" src="/app.js"></script>
-</body>
-</html>
+<dialog id="employeeEditDialog"><div class="modal-head"><div><h3>Редактировать сотрудника</h3><p>Заполните все данные сотрудника.</p></div><button class="close" data-close>×</button></div><form class="form" id="employeeEditForm"><input type="hidden" name="id"><div class="field"><label>Имя *</label><input name="name" required></div><div class="form-grid"><div class="field"><label>Email *</label><input name="email" type="email" required></div><div class="field"><label>Роль *</label><input name="role" required></div></div><div class="field"><label>Bitrix24 ID *</label><input name="bitrix_user_id" required></div><div class="form-actions"><button class="btn" type="button" data-close>Отмена</button><button class="btn primary" type="submit" disabled>Сохранить</button></div></form></dialog>
+
+<dialog id="memberDialog"><div class="modal-head"><div><h3>Добавить в проект</h3><p>Выберите сотрудника из справочника.</p></div><button class="close" data-close>×</button></div><form class="form" id="memberForm"><input type="hidden" name="project_id"><div class="field"><label>Сотрудник *</label><select name="employee_id" required></select></div><div class="field"><label>Роль в проекте *</label><input name="role" placeholder="Разработчик / аналитик / QA" required></div><div class="form-actions"><button class="btn" type="button" data-close>Отмена</button><button class="btn primary" type="submit" disabled>Добавить в проект</button></div></form></dialog>
+
+<dialog id="newCategoryDialog"><div class="modal-head"><div><h3>Новая статья</h3><p>Для расхода можно связать статью с ролью сотрудника.</p></div><button class="close" data-close>×</button></div><form class="form" id="newCategoryForm"><div class="form-grid"><div class="field"><label>Название *</label><input name="name" required></div><div class="field"><label>Тип *</label><select name="type" required><option value="expense">Расход</option><option value="income">Поступление</option></select></div></div><div class="form-grid" id="categoryBindingFields"><div class="field"><label>Кому относится расход *</label><select name="party_mode" required><option value="counterparty">Контрагент</option><option value="employee">Сотрудник</option></select></div><div class="field" id="categoryEmployeeRoleField" data-hidden="true"><label>Роль сотрудника *</label><select name="employee_role"><option value="">Выберите роль</option></select><div class="form-help">В операции будут доступны только сотрудники этой роли.</div></div></div><div class="form-actions"><button class="btn" type="button" data-close>Отмена</button><button class="btn primary" type="submit" disabled>Создать</button></div></form></dialog>
+
+<dialog id="metricDialog" class="wide"><div class="modal-head"><div><h3 id="metricTitle">Показатель</h3><p id="metricSub"></p></div><button class="close" data-close>×</button></div><div class="panel-body" id="metricBody"></div></dialog>
+<dialog id="debtDialog" class="wide"><div class="modal-head"><div><h3 id="debtTitle">Общая дебиторка проекта</h3><p id="debtSub"></p></div><button class="close" data-close>×</button></div><div class="panel-body" id="debtBody"></div></dialog>
+<script src="https://api.bitrix24.com/api/v1/"></script>
+<script type="module" src="/app.js?v=1.0.0"></script>
+</body></html>

@@ -19,7 +19,9 @@ function tableColumns(table) {
 }
 
 function ensureColumn(table, name, definition) {
-  if (!tableColumns(table).has(name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+  if (tableColumns(table).has(name)) return false;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+  return true;
 }
 
 function createTransactionsTable() {
@@ -109,6 +111,8 @@ export function initDb() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL COLLATE NOCASE,
       type TEXT NOT NULL CHECK(type IN ('income','expense')),
+      party_mode TEXT NOT NULL DEFAULT 'counterparty' CHECK(party_mode IN ('counterparty','employee')),
+      employee_role TEXT NOT NULL DEFAULT '',
       is_default INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(name, type)
@@ -169,6 +173,20 @@ export function initDb() {
   ensureColumn('projects', 'attention_required', 'INTEGER NOT NULL DEFAULT 0 CHECK(attention_required IN (0,1))');
   ensureColumn('projects', 'attention_reason', "TEXT NOT NULL DEFAULT ''");
   ensureColumn('employees', 'role', "TEXT NOT NULL DEFAULT ''");
+  const categoryPartyModeAdded = ensureColumn(
+    'categories',
+    'party_mode',
+    "TEXT NOT NULL DEFAULT 'counterparty' CHECK(party_mode IN ('counterparty','employee'))"
+  );
+  const categoryEmployeeRoleAdded = ensureColumn('categories', 'employee_role', "TEXT NOT NULL DEFAULT ''");
+
+  if (categoryPartyModeAdded || categoryEmployeeRoleAdded) {
+    db.prepare(`
+      UPDATE categories
+      SET party_mode='employee', employee_role='Внутренний программист'
+      WHERE type='expense' AND name='Внутренние программисты'
+    `).run();
+  }
 
   createTransactionsTable();
   migrateLegacyMoneyColumn();
@@ -189,13 +207,16 @@ export function initDb() {
     CREATE INDEX IF NOT EXISTS idx_categories_type ON categories(type);
   `);
 
-  const insert = db.prepare('INSERT OR IGNORE INTO categories (name, type, is_default) VALUES (?, ?, 1)');
-  insert.run('Оплата от клиента', 'income');
-  insert.run('Внешние программисты', 'expense');
-  insert.run('Внутренние программисты', 'expense');
-  insert.run('Расходы на ИИ', 'expense');
-  insert.run('Аренда сервера', 'expense');
-  insert.run('Дивиденды', 'expense');
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO categories (name, type, party_mode, employee_role, is_default)
+    VALUES (?, ?, ?, ?, 1)
+  `);
+  insert.run('Оплата от клиента', 'income', 'counterparty', '');
+  insert.run('Внешние программисты', 'expense', 'counterparty', '');
+  insert.run('Внутренние программисты', 'expense', 'employee', 'Внутренний программист');
+  insert.run('Расходы на ИИ', 'expense', 'counterparty', '');
+  insert.run('Аренда сервера', 'expense', 'counterparty', '');
+  insert.run('Дивиденды', 'expense', 'counterparty', '');
 }
 
 export function resetDemoData() {
